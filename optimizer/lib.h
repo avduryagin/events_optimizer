@@ -10,7 +10,7 @@
 namespace py = pybind11;
 class optimizer
 {
-	size_t ncell = 0, nrow = 0;
+	size_t ncell = 0, nrow = 0,penalty_cell=0;
 	size_t niter = 0,maxiter=100;
 	const size_t ncol = 2;
 	float tolerance = 1e-3f, dt = 1.f;
@@ -19,6 +19,7 @@ class optimizer
 	py::array_t<float, py::array::c_style | py::array::forcecast>* data = nullptr;
 
 	float* rest = nullptr;
+	float* penalty = nullptr;
 	float var = 1.f, mean = 0.f;	
 	size_t* cell_count = nullptr;
 	size_t* cell_index = nullptr;
@@ -29,6 +30,7 @@ class optimizer
 	
 	float const func(size_t, size_t) const;	
 	float const diff_(size_t,size_t, size_t, float, float) const;
+	float const penalty_(size_t, size_t);
 	void replace(size_t, size_t);
 	float const optim_variance(size_t, size_t*);
 	float const get(size_t, size_t) const;

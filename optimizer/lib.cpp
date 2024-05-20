@@ -9,10 +9,12 @@ optimizer::optimizer(size_t ncell_,float dt_,float tolerance_)
 	//dt_ - шаг распределени€. ≈сли dt=1, то ncell - число дней.
 	//tolerance_ - точность алгоритма. 
 	this->ncell = ncell_;
+	this->penalty_cell = this->ncell - 1;
 	if (dt_ > 0) {this->dt = dt_;}
 	if (tolerance_ > 0) { this->tolerance = tolerance_; }
 	this->weight = new float[this->ncell];
 	this->weight_ = new float[this->ncell];
+
 	size_t i = 0;
 	while (i<this->ncell)
 	{
@@ -53,6 +55,7 @@ void optimizer::fit(py::array_t<float, py::array::c_style | py::array::forcecast
 	this->cell_index = new size_t[this->nrow];
 	this->cell_count = new size_t[this->nrow];
 	this->rest = new float[this->nrow];
+	this->penalty = new float[this->nrow];
 	this->data = data_ptr;
 	size_t i = 0,size=0;
 	float widht, hight,rest,s=0;
@@ -67,6 +70,7 @@ void optimizer::fit(py::array_t<float, py::array::c_style | py::array::forcecast
 		this->cell_count[i] = size;
 		rest = (s - size) * hight;
 		this->rest[i] = rest;
+		this->penalty[i] = this->penalty_(i, 0);
 		//this->cell_index->mutable_at(i) = 0;
 		this->cell_index[i] = 0;
 		this->place(i, 0,1.f);
@@ -102,9 +106,9 @@ void optimizer::optimize()
 	size_t cell, i, cell_;
 	bool go = true;
 	this->niter = 0;
-	//std::string path = "D:\\log_file.txt";
+	//std::string path = "C:\\Users\\avduryagin\\source\\repos\\pycpp\\log_file.txt";
 	//std::ofstream out;
-	
+	//out.open(path);
 
 	//ѕоследовательно перебираем все меропри€ти€ в поиске оптимального положени€ по метрике.
 	//≈сли такое положение найдено, меропри€тие перещаетс€ в него (cell).
@@ -127,11 +131,11 @@ void optimizer::optimize()
 			//дл€ меропри€ти€ i вычисл€етс€ минимум значени€ целевой функции. ≈сли мимимум достигаетс€ в €чейке отличной от текущей
 			//- перемещаем меропри€тие в новую €чейку.
 			var = this->optim_variance(i, &cell);
-
 			if ((cell < this->ncell)&&(cell!=cell_))
 			{
-				//this->log.append(std::to_string(i) + " " + std::to_string(var) + " " + std::to_string(cell) + "\n");
+				
 				this->replace(i, cell);
+				this->penalty[i] = var;
 				cell = this->ncell;
 				go = true;
 				
@@ -139,13 +143,13 @@ void optimizer::optimize()
 			
 			++ i;
 		}
-
+		
+		
 		this->var = this->loc_variance(this->weight);	
 	}
 	
 	this->variance = this->var;
 	this->niter_ = (unsigned int)this->niter;
-	//out.open(path);
 	//out << this->log;
 	//out.close();
 }
@@ -309,8 +313,9 @@ float const optimizer::diff_(size_t index,size_t cell, size_t size, float f0, fl
 
 float const optimizer::optim_variance(size_t index, size_t* new_cell)
 {
-	float min_var= 0;
-	float var=0.f,f0,f1,df=0,delta=0;
+	
+	float min_var= this->penalty[index];
+	float var=0.f,f0,f1,df=0,delta=0,penalty=0,penalty_=0;
 
 	size_t current_cell = this->cell_index[index];
 	size_t size= this->cell_count[index]+1;
@@ -323,11 +328,13 @@ float const optimizer::optim_variance(size_t index, size_t* new_cell)
 	while (i>0)
 	{
 		df = this->diff_(index,i-1, size, f0, f1);
+		penalty = this->penalty_(index, i - 1);
 		var -= df;
 		delta = std::abs(var - min_var);
-		if((var<min_var)&&(delta>this->tolerance))
+		if(((var+penalty)<min_var)&&(delta>this->tolerance))
 		{ 
 			min_var = var;
+			penalty_ = penalty;
 			cell = i-1;
 			
 		}	
@@ -340,21 +347,40 @@ float const optimizer::optim_variance(size_t index, size_t* new_cell)
 	while (i<this->ncell-1)
 	{
 		df = this->diff_(index,i, size, f0, f1);
+		penalty = this->penalty_(index, i+1);		
+
 		var += df;
 		delta = std::abs(var - min_var);
-		if ((var < min_var) && (delta > this->tolerance))
+		if (((var+penalty) < min_var) && (delta > this->tolerance))
 		{
 			min_var = var;
+			penalty_ = penalty;
 			cell = i+1;
 		}
 
 		++i;
 
 	
-	}
-
+	}	
 	if (cell!=current_cell){ *new_cell = cell; }
 	else { *new_cell = this->ncell; }	
-	return min_var;
+	return penalty_;
 
 }
+
+float const optimizer::penalty_(size_t index, size_t cell)
+{
+	int npenalty = cell + this->cell_count[index] - this->penalty_cell;
+	float penalty = 0.f;
+	
+	
+	if (!(npenalty > 0)) { return penalty; }
+	float debit,tau;
+	debit = this->get(index,1);
+	tau= this->get(index, 0);
+	penalty= debit * (tau - this->cell_count[index] - 1 + npenalty);
+	//this->log.append("i=" + std::to_string(index) + ", cell=" + std::to_string(cell) + ", npenalty =" + std::to_string(npenalty)+ ", penalty =" + std::to_string(penalty)+"\n");
+	return penalty;
+
+
+};
