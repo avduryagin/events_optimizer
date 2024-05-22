@@ -39,6 +39,10 @@ optimizer::~optimizer()
 	{
 		delete[] this->rest;
 	}
+	if (this->penalty != 0)
+	{
+		delete[] this->penalty;
+	}
 }
 
 void optimizer::fit(py::array_t<float, py::array::c_style | py::array::forcecast>* data_ptr, py::array_t<int, py::array::c_style | py::array::forcecast>& indices, py::array_t<float, py::array::c_style | py::array::forcecast>& weight, float mean_ = 0., unsigned int njobs = 1, unsigned int maxiter = 100)
