@@ -7,8 +7,8 @@ optimizer::optimizer(size_t ncell_,float dt_,float tolerance_)
 	//инизиализация базовых переменных в конструкторе.
 	//ncell_ - число ячеек в распределении.
 	//dt_ - шаг распределения. Если dt=1, то ncell - число дней.
-	//tolerance_ - точность алгоритма. 
-	this->ncell = ncell_;
+	//tolerance_ - точность алгоритма.	
+	this->ncell = ncell_;	
 	this->penalty_cell = this->ncell - 1;
 	if (dt_ > 0) {this->dt = dt_;}
 	if (tolerance_ > 0) { this->tolerance = tolerance_; }
@@ -45,22 +45,23 @@ optimizer::~optimizer()
 	}
 }
 
-void optimizer::fit(py::array_t<float, py::array::c_style | py::array::forcecast>* data_ptr, py::array_t<int, py::array::c_style | py::array::forcecast>& indices, py::array_t<float, py::array::c_style | py::array::forcecast>& weight, float mean_ = 0., unsigned int njobs = 1, unsigned int maxiter = 100)
+ void optimizer::fit(py::array_t<float, py::array::c_style | py::array::forcecast>* data_ptr, py::array_t<int, py::array::c_style | py::array::forcecast>& indices, py::array_t<float, py::array::c_style | py::array::forcecast>& weight, py::array_t<float, py::array::c_style | py::array::forcecast>* mean_array, unsigned int njobs = 1, unsigned int maxiter = 100)
 {
 	//Инициализируем переменные. Входные данные:
 	//data_ptr - 2D массив. data_ptr[:,0] - duration; data_ptr[:,1]- debit.
 	//indices- 1D массив размером 1x nrow (nrow - число мероприятий). В нем каждому мероприятию сопоставляется индекс из массива weight, 
 	//weight - 1D массив размером 1x ncell (ncell - число дней) - массив, в который пишутся значения дебита распределенных мероприятий. 
-	//mean - среднее значение, к которому стремятся значения weight.
+	//mean_array - 1D массив размерности 1x ncell (ncell - число дней) - массив, в котором задаются целевые значения недоборов для каждой cell. К ним стремятся значения weight.	
 	//maxiter - ограничение на число итераций алгоритма оптимизации. Предельное число прогона всего списка мероприятий.
 	//njobs - число ядер, на которых можно производлить расчет. Экспериментальная опция. Из-за врпемени на диспетчеризацию быстрее всего работает на одном ядре.
 	this->nrow = data_ptr->shape(0);
-	this->mean = mean_;	
+	this->mean = 0;	
 	this->cell_index = new size_t[this->nrow];
 	this->cell_count = new size_t[this->nrow];
 	this->rest = new float[this->nrow];
 	this->penalty = new float[this->nrow];
 	this->data = data_ptr;
+	this->mean_array = mean_array;
 	size_t i = 0,size=0;
 	float widht, hight,rest,s=0;
 	this->maxiter = maxiter;
@@ -78,6 +79,12 @@ void optimizer::fit(py::array_t<float, py::array::c_style | py::array::forcecast
 		//this->cell_index->mutable_at(i) = 0;
 		this->cell_index[i] = 0;
 		this->place(i, 0,1.f);
+		++i;
+	}
+	i = 0;
+	while (i<this->ncell)
+	{
+		this->weight[i] -= this->mean_array->at(i);
 		++i;
 	}
 	this->var = this->loc_variance(this->weight);
@@ -110,9 +117,9 @@ void optimizer::optimize()
 	size_t cell, i, cell_;
 	bool go = true;
 	this->niter = 0;
-	//std::string path = "C:\\Users\\avduryagin\\source\\repos\\pycpp\\log_file.txt";
-	//std::ofstream out;
-	//out.open(path);
+	/*std::string path = "C:\\Users\\avduryagin\\source\\repos\\pycpp\\log_file1.txt";
+	std::ofstream out;
+	out.open(path);*/
 
 	//Последовательно перебираем все мероприятия в поиске оптимального положения по метрике.
 	//Если такое положение найдено, мероприятие перещается в него (cell).
@@ -135,6 +142,7 @@ void optimizer::optimize()
 			//для мероприятия i вычисляется минимум значения целевой функции. Если мимимум достигается в ячейке отличной от текущей
 			//- перемещаем мероприятие в новую ячейку.
 			var = this->optim_variance(i, &cell);
+			//out << this->log;
 			if ((cell < this->ncell)&&(cell!=cell_))
 			{
 				
@@ -386,5 +394,328 @@ float const optimizer::penalty_(size_t index, size_t cell)
 	//this->log.append("i=" + std::to_string(index) + ", cell=" + std::to_string(cell) + ", npenalty =" + std::to_string(npenalty)+ ", penalty =" + std::to_string(penalty)+"\n");
 	return penalty;
 
+
+};
+generalized_optimizer::generalized_optimizer(size_t ncell_, float dt_, float tolerance_, size_t ngroup_):optimizer{ncell_,dt_,tolerance_}
+{
+	
+	this->ngroup = ngroup_;
+	this->groups = new float[this->ngroup];
+	this->groups_ = new float[this->ngroup];
+	for (size_t i = 0; i < this->ngroup; i++) 
+	{
+		this->groups[i] = 0;
+		this->groups_[i] = 0;
+	
+	}
+};
+generalized_optimizer::~generalized_optimizer() 
+{
+	delete[] this->groups_;
+	delete[] this->groups;
+};
+void generalized_optimizer::fit(py::array_t<float, py::array::c_style | py::array::forcecast>* data_ptr,
+	py::array_t<int, py::array::c_style | py::array::forcecast>& indices,
+	py::array_t<float, py::array::c_style | py::array::forcecast>& weight,
+	py::array_t<float, py::array::c_style | py::array::forcecast>& group,
+	py::array_t<float, py::array::c_style | py::array::forcecast>* mean_array, 
+	py::array_t<int, py::array::c_style | py::array::forcecast>* group_index_,
+	unsigned int maxiter = 100)
+{	/*std::string path = "C:\\Users\\avduryagin\\source\\repos\\pycpp\\log_file.txt";
+	std::ofstream out;
+	out.open(path);*/
+
+	// 
+	//Инициализируем переменные. Входные данные:
+	//data_ptr - 2D массив. data_ptr[:,0] - duration; data_ptr[:,1]- debit.
+	//indices- 1D массив размером 1x nrow (nrow - число мероприятий). В нем каждому мероприятию сопоставляется индекс из массива weight, 
+	//weight - 1D массив размером 1x ncell (ncell - число дней) - массив, в который пишутся значения дебита распределенных мероприятий. 
+	//group -1D массив размером 1x ngroup (ngroup - число групп) - массив, в который пишутся значения дебита распределенных групп мероприятий. 
+	//mean_array - 1D массив размерности 1x ngroup (ngroup - число групп) - массив, в котором задаются целевые значения недоборов для каждой группы. К ним стремятся значения groups.	
+	//group_index_ - 1D массив размерности 1x ncell (ncell - число дней) - массив, в котором задается индекс принадлежности к группе для каждой ячейки. Ячейки объединяются индексами в непрерывные группы.
+	//  Уникальное число групп равно ngroup.
+	//maxiter - ограничение на число итераций алгоритма оптимизации. Предельное число прогона всего списка мероприятий.
+	
+	this->nrow = data_ptr->shape(0);
+	this->mean = 0;
+	this->cell_index = new size_t[this->nrow];
+	this->cell_count = new size_t[this->nrow];
+	this->rest = new float[this->nrow];
+	this->penalty = new float[this->nrow];
+	this->data = data_ptr;
+	this->mean_array = mean_array;
+	this->group_index = group_index_;
+	size_t i = 0, size = 0;
+	float widht, hight, rest, s = 0;
+	this->maxiter = maxiter;
+
+
+	while (i < this->nrow)
+	{
+		widht = this->data->at(i, 0);
+		hight = this->data->at(i, 1);
+		s = widht / this->dt;
+		size = (size_t)floorf(s);
+		this->cell_count[i] = size;
+		rest = (s - size) * hight;
+		this->rest[i] = rest;
+		this->penalty[i] = this->penalty_(i, 0);
+		//this->cell_index->mutable_at(i) = 0;
+		this->cell_index[i] = 0;
+		this->place(i, 0, 1.f);
+		++i;
+	}
+	
+	i = 0;
+	while (i < this->ngroup)	{
+		
+		this->groups[i] -= this->mean_array->at(i);		
+		++i;
+	}
+	
+	this->var = this->loc_variance(this->groups);	
+	this->variance = this->var;	
+	//Запускаем алгоритм оптимизации
+	this->optimize();
+	
+	//записывает результаты в выходные массивы. Нужно для Python.
+	int j = 0;
+	while (j < this->nrow)
+	{
+		indices.mutable_at(j) = (int)this->cell_index[j];
+		//indices.mutable_at(j) = j;
+		++j;
+	}
+	j = 0;
+	while (j < this->ncell)
+	{
+		weight.mutable_at(j) = this->weight[j];
+		++j;
+	}
+	j = 0;
+	while (j < this->ngroup)
+	{
+		group.mutable_at(j) = this->groups[j];
+		++j;
+	}
+	//out.close();
+}
+float generalized_optimizer::loc_variance(float*) const 
+{
+	size_t i = 0;
+	float s = 0,s_=0;
+	while(i<this->ngroup)
+	{
+		s_ = this->groups[i];
+		s += (s_ * s_);
+		++i;
+	}
+	return s / this->ngroup;
+};
+void generalized_optimizer::place(size_t index, size_t cell, float sign = -1.f)
+{
+	if (!(index < this->nrow) || !(cell < this->ncell)) { return; }
+	size_t n, ncell;
+	int teta;
+	float val = 0,re=0;
+	n = this->cell_count[index];
+	val = get(index, 1) * sign;
+
+	if (cell + n < this->ncell) 
+	{ 
+		re = this->rest[index] * sign;
+		this->weight[cell + n] += re;		
+		teta = this->group_index->at(cell + n);
+		this->groups[teta] += re;	
+
+	}
+
+	ncell = std::min(cell + n, this->ncell);
+
+	while (cell < ncell)
+	{
+		this->weight[cell] += val;
+		teta = this->group_index->at(cell);
+		this->groups[teta] += val;
+		++cell;
+	}
+
+};
+
+float generalized_optimizer::move_left(size_t index,float f0, float fn, float df, size_t n, size_t start, size_t cell, size_t& newcell,float dv) 
+{
+	size_t i = 0,cell_=0,tail=0,teta0=0,teta1=0,teta2=0;
+	float v0 = 0, v1 = 0, v2 = 0, fteta0 = 0, fteta1 = 0, fteta2 = 0,f02,fn2,df2,dv_,dvmin,penalty;
+	f02 = f0 * f0;
+	fn2 = fn * fn;
+	df2 = df * df;
+	dvmin = 0;
+	penalty = this->penalty[index];
+	i = 0;
+	while(i<start)
+	{
+		this->groups_[i] = this->groups[i];
+		++i;
+	}
+	cell_ = cell;
+	while(cell>0)
+	{
+		tail = cell + n;
+		v0 = 0, v1 = 0, v2 = 0;
+		teta2 = this->group_index->at(cell-1);
+		fteta2 = this->groups_[teta2];
+		v2 = 2 * fteta2 * f0 + f02;
+		fteta2 += f0;
+		this->groups_[teta2] += f0;
+
+		if (tail>this->ncell)
+		{
+			dv_ = (v0 + v1 + v2) / this->ngroup;
+			dv += dv_;
+			cell -= 1;
+			if ((dv<dvmin)&&(abs(dv-dvmin)>this->tolerance))
+			{
+				dvmin = dv;
+				cell_ = cell;			
+			}
+			continue;
+		}
+		teta0 = this->group_index->at(tail - 1);
+		fteta0 = this->groups_[teta0];
+		if (teta0 == teta2) { fteta0 = fteta2; }
+		v0 = 2 * fteta0 * df + df2;
+		fteta0 += df;
+		this->groups_[teta0] += df;
+
+		if (tail == this->ncell)
+		{
+			dv_ = (v0 + v1 + v2) / this->ngroup;
+			dv += dv_;
+			cell -= 1;
+			if ((dv < dvmin) && (abs(dv - dvmin) > this->tolerance))
+			{
+				dvmin = dv;
+				cell_ = cell;
+			}
+			continue;
+		}
+
+		teta1 = this->group_index->at(tail);
+		fteta1 = this->groups_[teta1];
+		v1 = -2 * fteta1 * fn + fn2;
+		fteta1 -= fn;
+		this->groups_[teta1] -= fn;
+		dv_ = (v0 + v1 + v2) / this->ngroup;
+		dv += dv_;
+		cell -= 1;
+		if ((dv < dvmin) && (abs(dv - dvmin) > this->tolerance))
+		{
+			dvmin = dv;
+			cell_ = cell;
+		}
+
+	
+	}
+	newcell = cell_;
+	return dvmin;
+};
+float generalized_optimizer::move_right(size_t index, float f0, float fn, float df, size_t n, size_t start, size_t cell, size_t& newcell, float dv)
+{
+	size_t i = 0, cell_ = 0, tail = 0, teta0 = 0, teta1 = 0, teta2 = 0;
+	float v0 = 0, v1 = 0, v2 = 0, fteta0 = 0, fteta1 = 0, fteta2 = 0, f02, fn2, df2, dv_, dvmin, penalty;
+	f02 = f0 * f0;
+	fn2 = fn * fn;
+	df2 = df * df;
+	dvmin = 0;
+	penalty = this->penalty[index];
+	i = start;
+	while (i < this->ngroup)
+	{
+		this->groups_[i] = this->groups[i];		
+		++i;
+	}
+	
+	cell_ = cell;
+	while(cell<this->ncell-1)
+	{
+		tail = cell + n+1;
+		v0 = 0, v1 = 0, v2 = 0;
+		teta0 = this->group_index->at(cell);
+		fteta0 = this->groups_[teta0];
+		v0 = -2 * fteta0 * f0 + f02;
+		fteta0 -= f0;
+		this->groups_[teta0] -= f0;		
+		if (tail > this->ncell)
+		{
+			dv_ = (v0 + v1 + v2) / this->ngroup;
+			dv += dv_;
+			cell += 1;
+			if ((dv < dvmin) && (abs(dv - dvmin) > this->tolerance))
+			{
+				dvmin = dv;
+				cell_ = cell;
+				
+			}
+			
+			continue;
+		}
+
+		teta1 = this->group_index->at(tail-1);
+		fteta1 = this->groups_[teta1];
+		if (teta1 == teta0) { fteta1 = fteta0; }
+		v1 = -2 * fteta1 * df + df2;
+		fteta1 -= df;
+		this->groups_[teta1] -= df;
+
+		if (tail == this->ncell)
+		{
+			dv_ = (v0 + v1 + v2) / this->ngroup;
+			dv += dv_;
+			cell += 1;
+			if ((dv < dvmin) && (abs(dv - dvmin) > this->tolerance))
+			{
+				dvmin = dv;
+				cell_ = cell;
+				
+			}
+			continue;
+		}
+		teta2 = this->group_index->at(tail);
+		fteta2 = this->groups_[teta2];	
+		if (teta2 == teta1) { fteta2 = fteta1; }
+		v2 = 2 * fteta2 * fn + fn2;
+		fteta2 += fn;
+		this->groups_[teta2] += fn;
+
+		dv_ = (v0 + v1 + v2) / this->ngroup;
+		dv += dv_;
+		cell += 1;
+		if ((dv < dvmin) && (abs(dv - dvmin) > this->tolerance))
+		{
+			dvmin = dv;
+			cell_ = cell;
+		}
+
+	}
+	newcell = cell_;
+	return dvmin;
+};
+float const generalized_optimizer::optim_variance(size_t index, size_t* newcell) 
+{
+	size_t current_cell, size, rstart, lstart, lstart_, rcell, lcell;
+	float f0, fn, df,rmin,lmin,vmin=0;
+	current_cell = this->cell_index[index];
+	size = this->cell_count[index];
+	f0 = this->get(index, 1);
+	fn = this->rest[index];
+	df = fn - f0;
+	rstart = this->group_index->at(current_cell);
+	lstart_ = std::min(current_cell + size, this->ncell - 1);
+	lstart = this->group_index->at(lstart_)+1;
+	rmin = this->move_right(index,f0, fn, df, size, rstart, current_cell, rcell,0.f);
+	lmin = this->move_left(index, f0, fn, df, size, lstart, current_cell, lcell, 0.f);
+	if (rmin < lmin) { *newcell = rcell; vmin = rmin; }
+	else { *newcell = lcell; vmin = lmin; };
+	return vmin; 
 
 };
